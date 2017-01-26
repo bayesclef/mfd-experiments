@@ -261,32 +261,54 @@ lPad !i !e !ls = (replicate (fromInteger (toInteger i) - len) e) ++ ls
 -- baically, a PDF convolved with a CDF is the CDF of the sums of the random
 -- variables involved.
 ldConv :: Array F DIM1 (Complex Double) -> Array F DIM1 (Complex Double) -> Array F DIM1 Double
-ldConv !c' !p' = {- t -} o
+ldConv !c !p = {- t -} o
   where
-    t =  trace ("c':" ++ ppShow c) . trace ("p':" ++ ppShow p)  . trace ("o':" ++ ppShow (toList o))
-    c = toList c'
-    p = toList p'
-    cLen = toInteger . length $ c
-    pLen = toInteger . length $ p
+    t =  trace ("c':" ++ ppShow c') . trace ("p':" ++ ppShow p')  . trace ("o':" ++ ppShow (toList o))
+    c' = toList c
+    p' = toList p
+    len :: Array F DIM1 (Complex Double) -> Int
+    len a = let (Z :. l) = extent a in l
+    cLen = len c
+    pLen = len p
     -- The fft library we're using only works on lists that are a power of
     -- two long, so we take the smallest power of 2 strictly larger than the
     -- space we need.
-    oLen =  bit $ 2 + log2 (cLen + (2 * pLen) - 2)
+    oLen =  fromInteger . bit $ 2 + log2 (toInteger $ cLen + (2 * pLen) - 2)
+    olExt _ = ix1 oLen
     -- You need to pad the CDF with pLen '1's otherwise it convolves with the
     -- 0s that are around the CDF and gets you odd resules.
-    cPad = fromList (Z :. (fromInteger oLen)) $! 0 : rPad (oLen - 1) 0 (rPad (pLen + cLen) 1 c)
-    pPad = fromList (Z :. (fromInteger oLen)) $! rPad oLen 0 p
+    -- cPad = fromList (Z :. (fromInteger oLen)) $! 0 : rPad (oLen - 1) 0 (rPad (pLen + cLen) 1 c)
+    cPad = computeS $ A.traverse c olExt clGen
+    clGen ol z@(Z :. i) | i == 0 = 0
+                        | i > 0 && i <= cLen = {- trace (show (i,cLen,ol (ix1 0))) $ -} ol (ix1 $ i - 1)
+                        | i > cLen && i <= (cLen + pLen) = 1 :+ 0
+                        | otherwise = 0
+    -- pPad = fromList (Z :. (fromInteger oLen)) $! rPad oLen 0 p
+    pPad = computeS $ A.traverse p olExt plGen
+    plGen ol (Z :. i) | i >= 0 && i < pLen = ol (ix1 i)
+                      | otherwise = 0
     cFFT = fft cPad
     pFFT = fft pPad
     oFFT = computeS $ cFFT *^ pFFT
     o :: Array F DIM1 Double
     o = computeS $ A.traverse (ifft oFFT) newExt result
-    oLen' = fromInteger $ cLen + pLen - 1
+    oLen' = cLen + pLen - 1
     -- newExt = id
     result ol (Z :. i) = realPart $ ol (ix1 $ i + 1)
     newExt _ = ix1 oLen'
     -- result ol (Z :. ind) = realPart $ ol (ix1 $ oLen' - ind :: DIM1)
 
+--main :: IO ()
+--main = do
+--  let cl = [1,1]
+--      pl = [0.2,0.2,0.2,0.2,0.2]
+--      ca = fromList (ix1 $ length cl) . map (\ x -> x :+ 0) $ cl
+--      pa = fromList (ix1 $ length pl) . map (\ x -> x :+ 0) $ pl
+--      o = ldConv ca pa
+--      ol = zip @Int [0..] $ toList o
+--  pPrint $ ol
+--  let gen = (<*>) (1 `d` 3)
+--  mapM_ (\ i -> putStrLn $ "output(" ++ show i ++ "):" ++ printDist (gen i :: Dist Double Integer)) [1..3]
 
 instance (Ord d, Integral d, Memoizable d, RealFrac p) => Num (Dist p d) where
 
@@ -813,7 +835,11 @@ genForNumDice sealingDice = do
 
 -- | The code that's actually run when we execute the program
 main :: IO ()
-main = do
+main = mapM_ genForNumDice [10]
+
+
+
+--- Leftover code from various tests of main :V
   -- let cl = [1]
   --     pl = [0.2,0.2,0.2,0.2,0.2]
   --     ca = fromList (ix1 $ length cl) . map (\ x -> x :+ 0) $ cl
@@ -826,7 +852,6 @@ main = do
   -- let dayGen = (multipleDaysProgress 10 2)
   -- print $ calculateDC (10,2) 4732 dayGen
   -- mapM_ (\ x -> print (x,cdf (dayGen x :: Dist Double Integer) 4732)) [32..64]
-  mapM_ genForNumDice [10]
   -- let gen = (<*>) (1 `d` 10)
   -- mapM_ (\ i -> putStrLn $ "output(" ++ show i ++ "):" ++ printDist (gen i :: Dist Double Integer)) [1..3]
 
