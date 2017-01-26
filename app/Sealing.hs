@@ -622,15 +622,18 @@ maxTarget :: Ord d => PS p d -> d
 maxTarget = maximum . map fst . probOfTarget
 
 -- | Figure out an interesting set of research targets when given a list of
---   PS querys.
+--   PS querys. first a bunch of things between the 0 and the minimum we
+--   find, and then a whole pile of increments in the range that's more
+--   interesting. This just gets us a full range of useful output.
 getRTList :: (Ord d,Integral d) => [PS p d]-> [d]
-getRTList pl = rmdups $ [min,min+inc..max] ++ [max]
+getRTList pl = rmdups $ [0,zDivs..min] ++ [min,min+inc..max] ++ [max]
   where
     min  = minimum . map minTarget $ pl
     max  = maximum . map maxTarget $ pl
     divs = 40
     inc  = (max - min) `div` divs
-
+    zDivs = 20
+    zInc = min `div` zDivs
 
 -- | Datastructure for DaysToComplete queries, this is just a convinient
 --   way to get nice read and show instances for this stype of information.
@@ -739,6 +742,7 @@ writePSDC pair@(sealingDice,dailyThresh) (pss,dcs) = do
       , "Probability of Success Calculations" .= map psToPSJ pss
       , "Days to Completion Calculations" .= map dcToDCJ dcs
       ]
+
 -- Given a number of dice figure out a number of interesting daily thresholds
 --
 -- param "number of sealing dice"
