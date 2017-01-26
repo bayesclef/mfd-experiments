@@ -10,6 +10,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE BangPatterns #-}
 
 module Main where
 
@@ -66,9 +67,9 @@ data Dist prob dom where
     --   identical to `(\ x -> cdf x - cdf (pred x))`
     , pdf :: dom -> prob
     -- | The minimum value of a range outside of which the PDF is always 0
-    , min :: dom
+    , min :: !dom
     -- | The maximum value of a range outside of which the PDF is always 0
-    , max :: dom
+    , max :: !dom
     -- | The list of CDF values such that
     --   `cLst == map cdf [min..max]`
     --   with whatever intermediate coersion that implies
@@ -83,7 +84,7 @@ printDist :: (Integral d,Enum d,Real p) => Dist p d -> String
 printDist Dist{..} = ppShow (
   toInteger min,
   toInteger max,
-  map (\ p -> (toInteger p,fromRational @Float . toRational $ cdf p)) [min..max])
+  map (\ p -> (toInteger p,fromRational @Double . toRational $ cdf p)) [min..max])
 
 
 
@@ -91,7 +92,7 @@ printCDF :: (Integral d,Enum d,Real p) => CDF p d -> String
 printCDF CDF{..} = ppShow (
   toInteger min,
   toInteger max,
-  map (\ p -> (toInteger p,fromRational @Float . toRational $ cdf p)) [min..max])
+  map (\ p -> (toInteger p,fromRational @Double . toRational $ cdf p)) [min..max])
 
 
 -- This is the temporary CDF constructor that we use to construct a Dist as
@@ -100,8 +101,8 @@ printCDF CDF{..} = ppShow (
 data CDF prob dom where
   CDF :: (Ord dom, Fractional prob) => {
       cdf :: dom -> prob
-    , min :: dom
-    , max :: dom
+    , min :: !dom
+    , max :: !dom
     } -> CDF prob dom
 
 -- typeclass to covert specific distribution types into Dist values that we
@@ -114,33 +115,36 @@ class ToDist a prob dom where
 --
 --   TODO :: Good lord, i think I've managed to fuck up writing an elegant
 --           binary search.
-getLastZero :: (Ord dom, Integral dom, Real prob) => CDF prob dom -> dom
+getLastZero :: (Ord dom, Integral dom, RealFrac prob) => CDF prob dom -> dom
 getLastZero CDF{..} | cdf min > 0 = min
                     | otherwise = search (min,max)
+
   where
-    search (min,max) | min + 1 == max && cdf max <= 0 = max
-                     | min + 1 == max && cdf min <= 0 = min
-                     | min >= max && cdf max == 0 = max
-                     | cdf min <= 0 && cdf mid > 0 = search (min,mid)
-                     | cdf mid <= 0 && cdf max > 0 = search (mid,max)
+    search (min,max) | min + 1 == max && cdf max <= thresh = max
+                     | min + 1 == max && cdf min <= thresh = min
+                     | min >= max && cdf max <= thresh = max
+                     | cdf min <= thresh && cdf mid > thresh = search (min,mid)
+                     | cdf mid <= thresh && cdf max > thresh = search (mid,max)
                      | otherwise = error $ "getLastZero is broken"
       where
+        thresh = 0.000001
         mid =  {- trace ("glz: " ++ show (toInteger min,toInteger m',toInteger max)) $ -}  m'
         m' = (min + max) `div` 2
 
 -- | Get the index of the first 1 in a CDF's distribution, useful for
 --   shrinking the domain of Dist when things look like a normal distribution
-getFirstOne :: (Ord dom, Integral dom, Real prob) => CDF prob dom -> dom
+getFirstOne :: (Ord dom, Integral dom, RealFrac prob) => CDF prob dom -> dom
 getFirstOne CDF{..}  | cdf max < 1 = max
                      | otherwise = search (min,max)
   where
-    search (min,max) | min + 1 == max && cdf min >= 1 = min
-                     | min + 1 == max && cdf max >= 1 = max
-                     | min >= max && cdf min == 1 = min
-                     | cdf mid < 1 && cdf max >= 1 = search (mid,max)
-                     | cdf min < 1 && cdf mid >= 1 = search (min,mid)
+    search (min,max) | min + 1 == max && cdf min >= thresh = min
+                     | min + 1 == max && cdf max >= thresh = max
+                     | min >= max && cdf min >= thresh = min
+                     | cdf mid < thresh && cdf max >= thresh = search (mid,max)
+                     | cdf min < thresh && cdf mid >= thresh = search (min,mid)
                      | otherwise = error "GetFirstOne is Broken"
       where
+        thresh = 0.999999
         mid = {- trace ("gfo: " ++ show (toInteger min,toInteger m',toInteger max)) $ -} m'
         m' = (min + max) `div` 2
 
@@ -149,40 +153,42 @@ getFirstOne CDF{..}  | cdf max < 1 = max
 --
 --   TODO :: Good lord, i think I've managed to fuck up writing an elegant
 --           binary search.
-getLastZero' :: (Ord dom, Integral dom, Real prob) => Dist prob dom -> dom
+getLastZero' :: (Ord dom, Integral dom, RealFrac prob) => Dist prob dom -> dom
 getLastZero' Dist{..} | cdf min > 0 = min
                       | otherwise = search (min,max)
   where
-    search (min,max) | min + 1 == max && cdf max <= 0 = max
-                     | min + 1 == max && cdf min <= 0 = min
-                     | min >= max && cdf max == 0 = max
-                     | cdf min <= 0 && cdf mid > 0 = search (min,mid)
-                     | cdf mid <= 0 && cdf max > 0 = search (mid,max)
+    search (min,max) | min + 1 == max && cdf max <= thresh = max
+                     | min + 1 == max && cdf min <= thresh = min
+                     | min >= max && cdf max <= thresh = max
+                     | cdf min <= thresh && cdf mid > thresh = search (min,mid)
+                     | cdf mid <= thresh && cdf max > thresh = search (mid,max)
                      | otherwise = error $ "getLastZero is broken"
       where
+        thresh = 0.000001
         mid =  {- trace ("glz: " ++ show (toInteger min,toInteger m',toInteger max)) $ -}  m'
         m' = (min + max) `div` 2
 
 -- | Get the index of the first 1 in a CDF's distribution, useful for
 --   shrinking the domain of Dist when things look like a normal distribution
-getFirstOne' :: (Ord dom, Integral dom, Real prob) => Dist prob dom -> dom
+getFirstOne' :: (Ord dom, Integral dom, RealFrac prob) => Dist prob dom -> dom
 getFirstOne' Dist{..}  | cdf max < 1 = max
                        | otherwise = search (min,max)
   where
-    search (min,max) | min + 1 == max && cdf min >= 1 = min
-                     | min + 1 == max && cdf max >= 1 = max
-                     | min >= max && cdf min == 1 = min
-                     | cdf mid < 1 && cdf max >= 1 = search (mid,max)
-                     | cdf min < 1 && cdf mid >= 1 = search (min,mid)
+    search (min,max) | min + 1 == max && cdf min >= thresh = min
+                     | min + 1 == max && cdf max >= thresh = max
+                     | min >= max && cdf min >= thresh = min
+                     | cdf mid < thresh && cdf max >= thresh = search (mid,max)
+                     | cdf min < thresh && cdf mid >= thresh = search (min,mid)
                      | otherwise = error "GetFirstOne is Broken"
       where
+        thresh = 0.999999
         mid = {- trace ("gfo: " ++ show (toInteger min,toInteger m',toInteger max)) $ -} m'
         m' = (min + max) `div` 2
 
 -- | Trim the portions of the CDF that have shrunk to be basically 0 or 1
 --   minimizing work for convolutions and similar operations that work with
 --   the list of relevant values.
-shrinkCDF :: forall prob dom .(Ord dom, Integral dom, Real prob) => CDF prob dom -> CDF prob dom
+shrinkCDF :: forall prob dom .(Ord dom, Integral dom, RealFrac prob) => CDF prob dom -> CDF prob dom
 shrinkCDF c = {- to . tf $ -} c'
   where
     c' = (c{min = getLastZero c, max = getFirstOne c} :: CDF prob dom)
@@ -193,7 +199,7 @@ shrinkCDF c = {- to . tf $ -} c'
 -- This sort of wrapping allows us to make sure things are well memoized, in
 -- general the CDF function will be the one which gets wrapped in a memoize,
 -- with the rest of the instance just backed by that as needed.
-instance (Ord dom, Integral dom, Real prob) => ToDist CDF prob dom where
+instance (Ord dom, Integral dom, RealFrac prob) => ToDist CDF prob dom where
   toDist = assembleDist . shrinkCDF
     where
       assembleDist CDF{..} = Dist {
@@ -228,12 +234,12 @@ boundPDF (min,max) pdf i
 
 -- | Right padding a list.
 rPad :: Integer -> c -> [c] -> [c]
-rPad i e ls = ls ++ (replicate (fromInteger (toInteger i) - len) e)
+rPad !i !e !ls = ls ++ (replicate (fromInteger (toInteger i) - len) e)
   where len = length ls
 
 -- | Left padding a list.
 lPad :: Integer -> c -> [c] -> [c]
-lPad i e ls = (replicate (fromInteger (toInteger i) - len) e) ++ ls
+lPad !i !e !ls = (replicate (fromInteger (toInteger i) - len) e) ++ ls
   where len = length ls
 
 -- ldConv :: [Complex Double] -> [Complex Double] -> [Complex Double]
@@ -242,7 +248,7 @@ lPad i e ls = (replicate (fromInteger (toInteger i) - len) e) ++ ls
 -- baically, a PDF convolved with a CDF is the CDF of the sums of the random
 -- variables involved.
 ldConv :: [Complex Double] -> [Complex Double] -> [Double]
-ldConv c p = o
+ldConv !c !p = o
   where
     cLen = toInteger . length $ c
     pLen = toInteger . length $ p
@@ -320,7 +326,7 @@ irwinHall  :: forall num dom prob. (Integral num, Bits num, Real dom, Memoizable
            => num -- Number of Dice
            -> num -- Sides on each Dice
            -> CDF prob dom
-irwinHall n s = CDF{cdf = sEmbed,min = min,max = max}
+irwinHall !n !s = CDF{cdf = sEmbed,min = min,max = max}
   where
     n' :: Integer
     n' = fromIntegral n
@@ -340,16 +346,16 @@ irwinHall n s = CDF{cdf = sEmbed,min = min,max = max}
     embed = memoize (\ i -> fromRational (iw (tfun $ toRational i) n'))
     -- Transform the normal input into the range of the irwinHall distribution
     tfun :: Rational -> Rational
-    tfun i = ((toRational n') * (i - (toRational $ n' + 1))) / (toRational $ (s' * n') - n' + 1)
+    tfun !i = ((toRational n') * (i - (toRational $ n' + 1))) / (toRational $ (s' * n') - n' + 1)
     -- Standard irwin hall CDF function
     iw :: Rational -> Integer -> Rational
-    iw x n = (1 % 2) + ((1 % (2 * (factorial . fromInteger $ n))) * (sumTerm x n))
+    iw !x !n = (1 % 2) + ((1 % (2 * (factorial . fromInteger $ n))) * (sumTerm x n))
     sumTerm :: Rational -> Integer -> Rational
-    sumTerm x n = sum $ map (sq x n) [0..n]
+    sumTerm !x !n = sum $! map (sq x n) [0..n]
     -- All the stuff in the summation term
     sq :: Rational -> Integer -> Integer -> Rational
-    sq x n k = (toRational $ ((-1) ^ k) * (n `C.choose` k))
-             * (signum $ x - fromInteger k)
+    sq !x !n !k = (toRational $! ((-1) ^ k) * (n `C.choose` k))
+             * (signum $! x - fromInteger k)
              * ((x - fromInteger k) ^ n)
 
 -- This just dives us the nicer "100 `d` 100" style syntax for CDFs and
@@ -358,11 +364,11 @@ d :: (Integral dom, Memoizable dom, RealFrac prob)
            => Integer -- Number of Dice
            -> Integer -- Sides on each Dice
            -> Dist prob dom
-d = (\ n s -> toDist $ irwinHall n s)
+d !n !s = toDist $ irwinHall n s
 
 -- The maximum of some CDF and a constant.
 dMax :: (Integral d,RealFrac p) => d -> Dist p d -> Dist p d
-dMax n Dist{..} = toDist CDF{
+dMax !n Dist{..} = toDist CDF{
     cdf = (\x -> if x < n then 0 else cdf x)
   , min = P.max n min
   , max = P.max n max
@@ -372,16 +378,16 @@ dMax n Dist{..} = toDist CDF{
 -- assumes the original CDF is a step function.
 --
 -- Yes, this means the PDF will be weird and spiky, just deal with it.
-dMul :: (Integral d,Real a,Fractional p) => a -> Dist p d -> Dist p d
-dMul n Dist{..} = toDist CDF{
+dMul :: (Integral d,Real a,RealFrac p) => a -> Dist p d -> Dist p d
+dMul !n Dist{..} = toDist CDF{
     cdf = cdf . floor . (\x -> toRational x / toRational n)
   , min = floor (toRational min * toRational n)
   , max = floor (toRational max * toRational n)
   }
 
 -- Add a constant to a CDF
-dPlus :: (Integral d,Fractional p) => d -> Dist p d -> Dist p d
-dPlus n Dist{..} = toDist CDF{
+dPlus :: (Integral d,RealFrac p) => d -> Dist p d -> Dist p d
+dPlus !n Dist{..} = toDist CDF{
     cdf = cdf . (\ x -> x - n)
   , min = min + n
   , max = max + n
@@ -391,9 +397,9 @@ dPlus n Dist{..} = toDist CDF{
 -- on a distribution until it finds the point where the CDF goes over that
 -- point
 findPercentile :: (Integral d,Ord d) => p -> Dist p d -> d
-findPercentile t Dist{..} | t == 0 = min
-                          | t == 1 = max
-                          | otherwise = fpHelp (min,max)
+findPercentile !t Dist{..} | t == 0 = min
+                           | t == 1 = max
+                           | otherwise = fpHelp (min,max)
   where
     fpHelp (min,max) | min == max = min
                      | (cdf min < t) && (cdf mid >= t) = fpHelp (min,mid - 1)
@@ -416,9 +422,9 @@ findPercentile t Dist{..} | t == 0 = min
     memoConv = memoize conv
     conv 1 = c
     conv 2 = c + c
-    conv i | i <= 0 = error "can't take 0 or fewer convolutions of CDF"
-           | i == gpow2 i = let n = memoConv (i `div` 2) in n + n
-           | otherwise    = memoConv (gpow2 i) + memoConv (i - gpow2 i)
+    conv !i | i <= 0 = error "can't take 0 or fewer convolutions of CDF"
+            | i == gpow2 i = let n = memoConv (i `div` 2) in n + n
+            | otherwise    = memoConv (gpow2 i) + memoConv (i - gpow2 i)
 -- | The number of research points one expects to get in a single day
 --
 --   n = # of Sealing Dice
@@ -433,10 +439,10 @@ findPercentile t Dist{..} | t == 0 = min
 --   target and gives you the distribution for expected increase in C
 --
 --   Expected progress for `a` days is `singleDaysProgress n t <*> a`
-singleDaysProgress :: Integer -> Integer -> Dist Float Integer
+singleDaysProgress :: Integer -> Integer -> Dist Double Integer
 singleDaysProgress = sdp
   where
-    sdp n t = (1 / ((n' + (t'/50)) ** 0.65)) `dMul` (dMax 0 (dPlus (-t) (n `d` 100)))
+    sdp !n !t = (1 / ((n' + (t'/50)) ** 0.65)) `dMul` (dMax 0 (dPlus (-t) (n `d` 100)))
       where
         n' = fromInteger n
         t' = fromInteger t
@@ -445,7 +451,7 @@ singleDaysProgress = sdp
 --   we can pass to other things as needed
 --
 --   params = n t a
-multipleDaysProgress :: Integer -> Integer -> Integer -> Dist Float Integer
+multipleDaysProgress :: Integer -> Integer -> Integer -> Dist Double Integer
 multipleDaysProgress n t = (<*>) (singleDaysProgress n t)
 
 -- The number of days needed to get a higher than X chance of completion given
@@ -455,7 +461,7 @@ multipleDaysProgress n t = (<*>) (singleDaysProgress n t)
 -- x = percentage sucess change you want to find the correct set of days for.
 --
 -- params are x n t r
-daysToComplete :: Float -> Integer -> Integer -> Integer -> Maybe Integer
+daysToComplete :: Double -> Integer -> Integer -> Integer -> Maybe Integer
 daysToComplete x n t r = dta 1
   where
     -- | function that scales up by 2 each time, looking for a range, since
@@ -466,7 +472,7 @@ daysToComplete x n t r = dta 1
           | (a * 2) > maxDays      = dtb a
           | otherwise              = dta (a * 2)
       where
-        progress = (1 - (cdf (multipleDaysProgress n t a :: Dist Float Integer) r))
+        progress = (1 - (cdf (multipleDaysProgress n t a :: Dist Double Integer) r))
     -- | This one just keeps us from going through a huge pile of intermediate
     --   results in order to find that it takes more than our maximum. I figure
     --   this is going to be a very common outcome when generating a diagram
@@ -474,7 +480,7 @@ daysToComplete x n t r = dta 1
     dtb a | progress < x = Nothing
           | otherwise    = dtc (a,maxDays)
       where
-        progress = (1 - (cdf (multipleDaysProgress n t maxDays :: Dist Float Integer) r))
+        progress = (1 - (cdf (multipleDaysProgress n t maxDays :: Dist Double Integer) r))
     -- | This function does the binary search for the actual point of change,
     --   once we've got a range set up and should skip a lot of useless computing.
     dtc (min,max)
@@ -485,7 +491,7 @@ daysToComplete x n t r = dta 1
       | otherwise = error "should never reach here"
       where
         mid = (min + 1 + max) `div` 2
-        progress = (1 - (cdf (multipleDaysProgress n t mid :: Dist Float Integer) r))
+        progress = (1 - (cdf (multipleDaysProgress n t mid :: Dist Double Integer) r))
 
 -- 12 weeks is the limit we search, if a project takes more than 3 months
 -- our thresholds are too high. We're not going to find a 6 month strech
@@ -506,31 +512,31 @@ maxDays = 7 * 12
 -- params are md x r
 --
 --
-daysToComplete' :: (Integer -> Dist Float Integer) -> Float -> Integer -> Maybe Integer
-daysToComplete' md x r = {-(trace $ "days: " ++ show (x,r))-} dta 1
+daysToComplete' :: (Integer -> Dist Double Integer) -> Double -> Integer -> Maybe Integer
+daysToComplete' !md !x !r = {-(trace $ "days: " ++ show (x,r))-} dta 1
   where
     -- | function that scales up by 2 each time, looking for a range, since
     --   all the relevant intermediate products are memoized, this is just
     --   doing work that would have to be done anyway.
-    dta a | progress > x && a == 1 = {- t $ -} Just 1
+    dta !a | progress > x && a == 1 = {- t $ -} Just 1
           | progress > x           = {- t $ -} dtc (a `div` 2,a)
           | (a * 2) >= maxDays     = {- t $ -} dtb a
           | otherwise              = {- t $ -} dta (a * 2)
       where
-        progress = (1 - (cdf (md a :: Dist Float Integer) r))
+        progress = (1 - (cdf (md a :: Dist Double Integer) r))
         t = trace $ "dta: " ++ show (x,progress,a)
     -- | This one just keeps us from going through a huge pile of intermediate
     --   results in order to find that it takes more than our maximum. I figure
     --   this is going to be a very common outcome when generating a diagram
     --   or table.
-    dtb a | progress < x = {- t $ -} Nothing
+    dtb !a | progress < x = {- t $ -} Nothing
           | otherwise    = {- t $ -} dtc (a,maxDays)
       where
-        progress = (1 - (cdf (md maxDays :: Dist Float Integer) r))
+        progress = (1 - (cdf (md maxDays :: Dist Double Integer) r))
         t = trace $ "dtb: " ++ show (x,progress,a)
     -- | This function does the binary search for the actual point of change,
     --   once we've got a range set up and should skip a lot of useless computing.
-    dtc (min,max)
+    dtc !(min,max)
       | min + 1 == max && progress > x = {- t $ -} Just mid
       | min + 1 == max && progress < x = {- t $ -} Just max
       | min == maxDays && progress < x = {- t $ -} Nothing
@@ -540,23 +546,23 @@ daysToComplete' md x r = {-(trace $ "days: " ++ show (x,r))-} dta 1
       | otherwise                      = {- t $ -} error "DaysToComplete is broken"
       where
         mid = (min + 1 + max) `div` 2
-        progress = (1 - (cdf (md mid :: Dist Float Integer) r))
-        progressmin = (1 - (cdf (md min :: Dist Float Integer) r))
-        progressmax = (1 - (cdf (md max :: Dist Float Integer) r))
+        progress = (1 - (cdf (md mid :: Dist Double Integer) r))
+        progressmin = (1 - (cdf (md min :: Dist Double Integer) r))
+        progressmax = (1 - (cdf (md max :: Dist Double Integer) r))
         t = trace $ "dtc: " ++ show ((min,progressmin),(mid,progress),(max,progressmax))
 
 -- | The probability of success thresholds we're looking for when given a
 --   sealing dice x daily target x number of days (research target -> prob)
-psThresholds :: [Float]
+psThresholds :: [Double]
 psThresholds = [0,0.05..1]
 
 -- | Datastructure for a probability of success threshold query , basically
 --   just so we can derive nice Show and Read instances for this
 data PS p d = PS {
-      sealingDice :: Integer
-    , dailyTarget :: Integer
-    , numDays :: Integer
-    , probOfTarget :: [(d,p)]
+      sealingDice :: !Integer
+    , dailyTarget :: !Integer
+    , numDays :: !Integer
+    , probOfTarget :: ![(d,p)]
     } deriving (Show,Read,Generic)
 
 instance (ToJSON p,ToJSON d) => ToJSON (PS p d) where
@@ -566,8 +572,8 @@ instance (FromJSON p,FromJSON d) => FromJSON (PS p d)
 
 -- | Type we're using for prettier JSON output
 data PSJ p d = PSJ {
-    numDays :: Integer
-  , dataPoints :: [PSE p d]
+    numDays :: !Integer
+  , dataPoints :: ![PSE p d]
   } deriving (Show,Read,Generic)
 
 instance (ToJSON p,ToJSON d) => ToJSON (PSJ p d) where
@@ -578,8 +584,8 @@ instance (FromJSON p,FromJSON d) => FromJSON (PSJ p d)
 -- This is the type we're using to get prettier JSON output for the pairs of
 -- researchTargets and Probility of sucess
 data PSE p d = PSE {
-    researchTarget :: d
-  , probabilityOfSuccess :: p
+    researchTarget :: !d
+  , probabilityOfSuccess :: !p
   } deriving (Show,Read,Generic)
 
 instance (ToJSON p,ToJSON d) => ToJSON (PSE p d) where
@@ -588,7 +594,7 @@ instance (ToJSON p,ToJSON d) => ToJSON (PSE p d) where
 instance (FromJSON p,FromJSON d) => FromJSON (PSE p d)
 
 psToPSJ :: (Ord d,Ord p) => PS p d -> PSJ p d
-psToPSJ PS{..} = PSJ{
+psToPSJ !PS{..} = PSJ{
     numDays = numDays
   , dataPoints = map (\ (rt,ps) -> PSE rt ps)  probOfTarget
   }
@@ -596,13 +602,13 @@ psToPSJ PS{..} = PSJ{
 -- | Given a bunch of information, generate a PS structure for a set of known
 --   parameters.
 calculatePS :: (Integer,Integer) -> Integer
-            -> (Integer -> Dist Float Integer)
-            -> PS Float Integer
-calculatePS (sealingDice,dailyTarget) numDays distGen
+            -> (Integer -> Dist Double Integer)
+            -> PS Double Integer
+calculatePS !(sealingDice,dailyTarget) !numDays !distGen
   = PS sealingDice dailyTarget numDays probOfTarget
   where
     -- The Distribution for the paticular day
-    dayDist :: Dist Float Integer
+    dayDist :: Dist Double Integer
     dayDist = distGen numDays
     getRT p = findPercentile p dayDist
     getPair p = (rt,1 - tp)
@@ -610,7 +616,7 @@ calculatePS (sealingDice,dailyTarget) numDays distGen
         -- | Research Target
         rt = getRT p
         -- | True Percent
-        tp = cdf (dayDist :: Dist Float Integer) rt
+        tp = cdf (dayDist :: Dist Double Integer) rt
     probOfTarget = rmdups $ map getPair psThresholds
 
 -- | Gets the minimum target in the PS
@@ -626,7 +632,7 @@ maxTarget = maximum . map fst . probOfTarget
 --   find, and then a whole pile of increments in the range that's more
 --   interesting. This just gets us a full range of useful output.
 getRTList :: (Ord d,Integral d) => [PS p d]-> [d]
-getRTList pl = rmdups $ [0,zDivs..min] ++ [min,min+inc..max] ++ [max]
+getRTList !pl = rmdups $ [0,zDivs..min] ++ [min,min+inc..max] ++ [max]
   where
     min  = minimum . map minTarget $ pl
     max  = maximum . map maxTarget $ pl
@@ -639,10 +645,10 @@ getRTList pl = rmdups $ [0,zDivs..min] ++ [min,min+inc..max] ++ [max]
 --   way to get nice read and show instances for this stype of information.
 --   That way others can work with it too.
 data DC p d = DC {
-    sealingDice :: Integer
-  , dailyTarget :: Integer
-  , researchTarget :: Integer
-  , probOfNumDays :: [(Integer,p)]
+    sealingDice :: !Integer
+  , dailyTarget :: !Integer
+  , researchTarget :: !Integer
+  , probOfNumDays :: ![(Integer,p)]
   } deriving (Show,Read,Generic)
 
 
@@ -652,8 +658,8 @@ instance (ToJSON p,ToJSON d) => ToJSON (DC p d) where
 instance (FromJSON p,FromJSON d) => FromJSON (DC p d)
 
 data DCJ p d = DCJ {
-    researchTarget :: Integer
-  , dataPoints :: [DCE p d]
+    researchTarget :: !Integer
+  , dataPoints :: ![DCE p d]
   } deriving (Show,Read,Generic)
 
 instance (ToJSON p,ToJSON d) => ToJSON (DCJ p d) where
@@ -663,8 +669,8 @@ instance (FromJSON p,FromJSON d) => FromJSON (DCJ p d)
 
 
 data DCE p d = DCE {
-    numDays :: Integer
-  , probabilityOfSuccess :: p
+    numDays :: !Integer
+  , probabilityOfSuccess :: !p
   } deriving (Show,Read,Generic)
 
 instance (ToJSON p,ToJSON d) => ToJSON (DCE p d) where
@@ -673,34 +679,41 @@ instance (ToJSON p,ToJSON d) => ToJSON (DCE p d) where
 instance (FromJSON p,FromJSON d) => FromJSON (DCE p d)
 
 dcToDCJ :: (Ord d,Ord p) => DC p d -> DCJ p d
-dcToDCJ DC{..} = DCJ{
+dcToDCJ !DC{..} = DCJ{
     researchTarget = researchTarget
   , dataPoints = map (\ (nd,pr) -> DCE nd pr)  probOfNumDays
   }
 
 calculateDC :: (Integer,Integer) -> Integer
-            -> (Integer -> Dist Float Integer)
-            -> DC Float Integer
-calculateDC (sealingDice,dailyTarget) researchTarget distGen
+            -> (Integer -> Dist Double Integer)
+            -> DC Double Integer
+calculateDC !(sealingDice,dailyTarget) !researchTarget !distGen
   = DC sealingDice dailyTarget researchTarget probOfNumDays
   where
-    getDays :: Float -> Maybe Integer
+    getDays :: Double -> Maybe Integer
     getDays p = daysToComplete' distGen p researchTarget
-    -- Find the days to get 1/10th of 1% probability of success
-    minDay :: Maybe Integer
-    minDay = getDays 0.001
-    -- Find the days to get 1/10th of 1% probability of failure
-    maxDay :: Maybe Integer
-    maxDay = Just . fromMaybe maxDays $ getDays 0.999
-    -- list of days we're going to search
-    allDays :: [Maybe Integer]
-    allDays = map Just . fromMaybe [] $ (\ a b -> [a..b]) <$> minDay P.<*> maxDay
     -- just get the actual probability for a particular day
-    getPair dayOf = prob <$> dayOf
+    getPair p = prob <$> dayOf
       where
-        prob d = (d,1 - cdf (distGen d :: Dist Float Integer) researchTarget)
+        dayOf = getDays p
+        prob d = (d,1 - cdf (distGen d :: Dist Double Integer) researchTarget)
     -- Go through each day and get research thresholds for it
-    probOfNumDays = rmdups . catMaybes . map getPair $ allDays
+    probOfNumDays = rmdups . catMaybes . map getPair $ [0.001] ++ [0.05,0.1..0.95] ++ [0.999]
+    -- -- Find the days to get 1/10th of 1% probability of success
+    -- minDay :: Maybe Integer
+    -- minDay = getDays 0.001
+    -- -- Find the days to get 1/10th of 1% probability of failure
+    -- maxDay :: Maybe Integer
+    -- maxDay = Just . fromMaybe maxDays $ getDays 0.999
+    -- -- list of days we're going to search
+    -- allDays :: [Maybe Integer]
+    -- allDays = map Just . fromMaybe [] $ (\ a b -> [a..b]) <$> minDay P.<*> maxDay
+    -- -- just get the actual probability for a particular day
+    -- getPair dayOf = prob <$> dayOf
+    --   where
+    --     prob d = (d,1 - cdf (distGen d :: Dist Double Integer) researchTarget)
+    -- -- Go through each day and get research thresholds for it
+    -- probOfNumDays = rmdups . catMaybes . map getPair $ allDays
 
 -- | Get a list of interesting numbers of days to have researched
 researchDays :: [Integer]
@@ -708,29 +721,29 @@ researchDays = rmdups $ [1..7] ++ [10,15..maxDays] ++ [maxDays]
 
 -- | Given a number of sealing dice and a daily threshold, generate a number
 --   of interesting DC and PS queries,
-printPSDC :: (Integer,Integer) -> IO ([PS Float Integer],[DC Float Integer])
-printPSDC setPair@(numDice,dailyThresh) = do
-  let distGen = multipleDaysProgress numDice dailyThresh
+printPSDC :: (Integer,Integer) -> IO ([PS Double Integer],[DC Double Integer])
+printPSDC !setPair@(numDice,dailyThresh) = do
+  let !distGen = multipleDaysProgress numDice dailyThresh
   pss <- mapM (genPrintPS distGen) researchDays
-  let researchTargets = getRTList pss
+  let !researchTargets = getRTList pss
   dcs <- mapM (genPrintDC distGen) researchTargets
   return (pss,dcs)
   where
-    genPrintPS distGen rd = do
+    genPrintPS !distGen !rd = do
       let ps = calculatePS setPair rd distGen
       --print dc
       putStrLn $ "ps: " ++ show (setPair,rd)
       return ps
-    genPrintDC distGen nd = do
+    genPrintDC !distGen !nd = do
       let dc = calculateDC setPair nd distGen
       -- when (probOfNumDays dc /= []) $ print dc
       putStrLn $ "dc: " ++ show (setPair,nd)
       return dc
 
 writePSDC :: (Integer,Integer)
-          -> ([PS Float Integer],[DC Float Integer])
+          -> ([PS Double Integer],[DC Double Integer])
           -> IO ()
-writePSDC pair@(sealingDice,dailyThresh) (pss,dcs) = do
+writePSDC !pair@(sealingDice,dailyThresh) !(pss,dcs) = do
   createDirectoryIfMissing False dir
   BS.writeFile file $ encodePretty jsonBlob
   where
@@ -748,13 +761,13 @@ writePSDC pair@(sealingDice,dailyThresh) (pss,dcs) = do
 -- param "number of sealing dice"
 --
 getDailyThresholds :: Integer -> [Integer]
-getDailyThresholds nd = rmdups $ zList ++ [ndMin] ++ pList ++ [ndMax]
+getDailyThresholds !nd = rmdups $ zList ++ [ndMin] ++ pList ++ [ndMax]
   where
     dist = nd `d` 100
     -- With nDice the probability of getting fewer than nMin is basically 0
-    ndMin = getLastZero' (dist :: Dist Float Integer)
+    ndMin = getLastZero' (dist :: Dist Double Integer)
     -- With nDice the probability of getting nore than nMax is basically 0
-    ndMax = getFirstOne' (dist :: Dist Float Integer)
+    ndMax = getFirstOne' (dist :: Dist Double Integer)
     -- number of daily thresholds we're going to be checking in the range
     -- [0..ndMin], where the probability of getting more is basically 100 %
     zDivs = 5
@@ -771,8 +784,8 @@ getDailyThresholds nd = rmdups $ zList ++ [ndMin] ++ pList ++ [ndMax]
 -- thresholds to test and then generate all the neccesary distributions
 genForNumDice :: Integer -> IO ()
 genForNumDice sealingDice = do
-  let thresholds = getDailyThresholds sealingDice
-      settingPairs = map (\ dt -> (sealingDice,dt)) thresholds
+  let !thresholds = getDailyThresholds sealingDice
+      !settingPairs = map (\ dt -> (sealingDice,dt)) thresholds
   mapM_ runPSDC settingPairs
   where
     runPSDC settingPair = printPSDC settingPair >>= writePSDC settingPair
@@ -791,9 +804,9 @@ main :: IO ()
 main = do
   -- let dayGen = (multipleDaysProgress 10 2)
   -- print $ calculateDC (10,2) 4732 dayGen
-  -- mapM_ (\ x -> print (x,cdf (dayGen x :: Dist Float Integer) 4732)) [32..64]
+  -- mapM_ (\ x -> print (x,cdf (dayGen x :: Dist Double Integer) 4732)) [32..64]
   mapM_ genForNumDice [10]
-  --putStrLn $ "output:" ++ printDist (70 `d` 2 :: Dist Float Integer)
+  --putStrLn $ "output:" ++ printDist (70 `d` 2 :: Dist Double Integer)
 
   --- print $ min (singleDaysProgress 20 1000 :: Dist Double Integer)
   -- print $ max (multipleDaysProg:w
@@ -802,13 +815,13 @@ main = do
   --print @[(Integer,Double)] $ map (\x -> (x,cdf (multipleDaysProgress 20 1000 2 :: Dist Double Integer) x)) [-5,-3..200]
 --   where
 --    c = multipleDaysProgress 70 100 20
---    getData :: [T Float Integer]
+--    getData :: [T Double Integer]
 --    getData = do
 --      sd <- [10,15..60]
 --      dt <- 1 : [20,40..80] ++ [0,100..6000]
 --      nd <- 1 : [8,16..80]
 --      ct <- [1..19] ++ [20,40..100] ++ [200,400..5000] ++ [5500,6000..10000]
---      let p = 1 - cdf (multipleDaysProgress sd dt nd :: Dist Float Integer) ct
+--      let p = 1 - cdf (multipleDaysProgress sd dt nd :: Dist Double Integer) ct
 --      return $ T sd dt nd ct p
 
 

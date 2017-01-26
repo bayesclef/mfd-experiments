@@ -83,13 +83,15 @@ executable sealing-analysis
   main-is:             
     Sealing.hs
 
-  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  ghc-options:        -O -threaded -rtsopts -with-rtsopts=-N
   
   build-depends:       
     base,
     cryptonite,
     exact-combinatorics,
     probability, 
+    -- fft,
+    -- carray,
     pure-fft,
     pretty-show,
     aeson,
