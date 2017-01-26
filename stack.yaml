@@ -5,6 +5,5 @@ packages:
 extra-deps:
 - diagrams-graphviz-1.4
 - memoize-0.8.1
-- probability-0.2.5.1
-- pure-fft-0.2.0
-resolver: lts-7.14
+- repa-fftw-3.2.3.2
+resolver: nightly-2017-01-25

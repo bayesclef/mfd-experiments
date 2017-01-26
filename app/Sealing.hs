@@ -35,7 +35,7 @@ import Data.Complex
 import Data.Bits
 import Data.List (group,sort)
 
-import Data.Aeson
+import Data.Aeson hiding (Array)
 import Data.Aeson.Encode.Pretty
 import GHC.Generics
 
@@ -43,7 +43,15 @@ import Text.Show.Pretty
 
 import Foreign.C.Types
 
-import Numeric.FFT
+import Data.Array.Repa.FFTW
+import Data.Array.Repa.Index
+import Data.Array.Repa.Repr.ForeignPtr
+import Data.Array.Repa hiding (map,zipWith,(++))
+import qualified Data.Array.Repa as A
+import Data.Array.Repa.Eval (fromList)
+
+
+-- import Numeric.FFT
 import qualified Data.ByteString.Lazy as BS
 import Debug.Trace
 
@@ -73,11 +81,11 @@ data Dist prob dom where
     -- | The list of CDF values such that
     --   `cLst == map cdf [min..max]`
     --   with whatever intermediate coersion that implies
-    , cLst :: [Complex Double]
+    , cLst :: Array F DIM1 (Complex Double)
     -- | The list of PDF values such that
     --   `pLst == map pdf [min..max]`
     --   with whatever intermediate coersion that implies
-    , pLst :: [Complex Double]
+    , pLst :: Array F DIM1 (Complex Double)
     } -> Dist prob dom
 
 printDist :: (Integral d,Enum d,Real p) => Dist p d -> String
@@ -116,8 +124,8 @@ class ToDist a prob dom where
 --   TODO :: Good lord, i think I've managed to fuck up writing an elegant
 --           binary search.
 getLastZero :: (Ord dom, Integral dom, RealFrac prob) => CDF prob dom -> dom
-getLastZero CDF{..} | cdf min > 0 = min
-                    | otherwise = search (min,max)
+getLastZero c@CDF{..} | cdf min > 0 = min
+                      | otherwise = {- trace ("cdf: " ++ printCDF c) $ -} search (min,max)
 
   where
     search (min,max) | min + 1 == max && cdf max <= thresh = max
@@ -125,10 +133,13 @@ getLastZero CDF{..} | cdf min > 0 = min
                      | min >= max && cdf max <= thresh = max
                      | cdf min <= thresh && cdf mid > thresh = search (min,mid)
                      | cdf mid <= thresh && cdf max > thresh = search (mid,max)
-                     | otherwise = error $ "getLastZero is broken"
+                     | otherwise = error $ "getLastZero is broken:" ++ printCDF c
       where
         thresh = 0.000001
-        mid =  {- trace ("glz: " ++ show (toInteger min,toInteger m',toInteger max)) $ -}  m'
+        mid = {- trace ("glz: " ++ show (
+           (toInteger min,fromRational @Double . toRational $ cdf min)
+          ,(toInteger m' ,fromRational @Double . toRational $ cdf m')
+          ,(toInteger max,fromRational @Double . toRational $ cdf max))) $ -} m'
         m' = (min + max) `div` 2
 
 -- | Get the index of the first 1 in a CDF's distribution, useful for
@@ -162,7 +173,7 @@ getLastZero' Dist{..} | cdf min > 0 = min
                      | min >= max && cdf max <= thresh = max
                      | cdf min <= thresh && cdf mid > thresh = search (min,mid)
                      | cdf mid <= thresh && cdf max > thresh = search (mid,max)
-                     | otherwise = error $ "getLastZero is broken"
+                     | otherwise = error $ "getLastZero' is broken"
       where
         thresh = 0.000001
         mid =  {- trace ("glz: " ++ show (toInteger min,toInteger m',toInteger max)) $ -}  m'
@@ -179,7 +190,7 @@ getFirstOne' Dist{..}  | cdf max < 1 = max
                      | min >= max && cdf min >= thresh = min
                      | cdf mid < thresh && cdf max >= thresh = search (mid,max)
                      | cdf min < thresh && cdf mid >= thresh = search (min,mid)
-                     | otherwise = error "GetFirstOne is Broken"
+                     | otherwise = error "GetFirstOne' is Broken"
       where
         thresh = 0.999999
         mid = {- trace ("gfo: " ++ show (toInteger min,toInteger m',toInteger max)) $ -} m'
@@ -207,10 +218,12 @@ instance (Ord dom, Integral dom, RealFrac prob) => ToDist CDF prob dom where
         , pdf  = boundPDF (min,max) pdf
         , min  = min
         , max  = max
-        , cLst = map (toCD . cdf) [min..max]
-        , pLst = map (toCD . pdf) [min..max]
+        , cLst = fromList (Z :. lLen) . map (toCD . cdf) $ lKeys
+        , pLst = fromList (Z :. lLen) . map (toCD . pdf) $ lKeys
         }
         where
+          lKeys = [min..max]
+          lLen = length lKeys
           pdf :: dom -> prob
           pdf x = cdf x - cdf (pred x)
           toCD :: Real p => p -> Complex Double
@@ -247,9 +260,12 @@ lPad !i !e !ls = (replicate (fromInteger (toInteger i) - len) e) ++ ls
 --
 -- baically, a PDF convolved with a CDF is the CDF of the sums of the random
 -- variables involved.
-ldConv :: [Complex Double] -> [Complex Double] -> [Double]
-ldConv !c !p = o
+ldConv :: Array F DIM1 (Complex Double) -> Array F DIM1 (Complex Double) -> Array F DIM1 Double
+ldConv !c' !p' = {- t -} o
   where
+    t =  trace ("c':" ++ ppShow c) . trace ("p':" ++ ppShow p)  . trace ("o':" ++ ppShow (toList o))
+    c = toList c'
+    p = toList p'
     cLen = toInteger . length $ c
     pLen = toInteger . length $ p
     -- The fft library we're using only works on lists that are a power of
@@ -258,13 +274,18 @@ ldConv !c !p = o
     oLen =  bit $ 2 + log2 (cLen + (2 * pLen) - 2)
     -- You need to pad the CDF with pLen '1's otherwise it convolves with the
     -- 0s that are around the CDF and gets you odd resules.
-    cPad = 0 : rPad (oLen - 1) 0 (rPad (pLen + cLen) 1 c)
-    pPad = rPad oLen 0 p
+    cPad = fromList (Z :. (fromInteger oLen)) $! 0 : rPad (oLen - 1) 0 (rPad (pLen + cLen) 1 c)
+    pPad = fromList (Z :. (fromInteger oLen)) $! rPad oLen 0 p
     cFFT = fft cPad
     pFFT = fft pPad
-    oFFT = zipWith (*) cFFT pFFT
-    o = take (fromInteger $ cLen + pLen - 1) . reverse . map realPart $ ifft oFFT
-
+    oFFT = computeS $ cFFT *^ pFFT
+    o :: Array F DIM1 Double
+    o = computeS $ A.traverse (ifft oFFT) newExt result
+    oLen' = fromInteger $ cLen + pLen - 1
+    -- newExt = id
+    result ol (Z :. i) = realPart $ ol (ix1 $ i + 1)
+    newExt _ = ix1 oLen'
+    -- result ol (Z :. ind) = realPart $ ol (ix1 $ oLen' - ind :: DIM1)
 
 
 instance (Ord d, Integral d, Memoizable d, RealFrac p) => Num (Dist p d) where
@@ -280,8 +301,8 @@ instance (Ord d, Integral d, Memoizable d, RealFrac p) => Num (Dist p d) where
       newMin = fMin + gMin
       newMax = fMax + gMax
       newFun x | newInd x < 0 = 0
-               | newInd x >= (length newCL) = 1
-               | otherwise =  (P.max 0) . (P.min 1) . fromRational . toRational $ newCL !! newInd x
+               | newInd x >= (let (Z :. x) = extent newCL in x) = 1
+               | otherwise =  (P.max 0) . (P.min 1) . fromRational . toRational $ newCL ! (ix1 $ newInd x)
       newInd x = (fromIntegral $ fromIntegral x - newMin)
 
 
@@ -335,7 +356,7 @@ irwinHall !n !s = CDF{cdf = sEmbed,min = min,max = max}
     min :: dom
     min = fromIntegral $ n
     max :: dom
-    max = fromIntegral $ s * n
+    max = fromIntegral $ s * n + 2
     -- sanity wrapper
     sEmbed :: dom -> prob
     sEmbed i | i < min   = 0
@@ -346,7 +367,7 @@ irwinHall !n !s = CDF{cdf = sEmbed,min = min,max = max}
     embed = memoize (\ i -> fromRational (iw (tfun $ toRational i) n'))
     -- Transform the normal input into the range of the irwinHall distribution
     tfun :: Rational -> Rational
-    tfun !i = ((toRational n') * (i - (toRational $ n' + 1))) / (toRational $ (s' * n') - n' + 1)
+    tfun !i = ((toRational n') * (i - (toRational $ n') + 1)) / (toRational $ (s' * n') - n' + 1)
     -- Standard irwin hall CDF function
     iw :: Rational -> Integer -> Rational
     iw !x !n = (1 % 2) + ((1 % (2 * (factorial . fromInteger $ n))) * (sumTerm x n))
@@ -790,23 +811,24 @@ genForNumDice sealingDice = do
   where
     runPSDC settingPair = printPSDC settingPair >>= writePSDC settingPair
 
--- sealing dice x research target x daily target x days x probability
---data T p d = T {
---    sealingDice :: Integer
---  , dailyTarget :: Integer
---  , numDays :: Integer
---  , counterTotal :: d
---  , probability :: p
---  } deriving (Show,Read)
-
 -- | The code that's actually run when we execute the program
 main :: IO ()
 main = do
+  -- let cl = [1]
+  --     pl = [0.2,0.2,0.2,0.2,0.2]
+  --     ca = fromList (ix1 $ length cl) . map (\ x -> x :+ 0) $ cl
+  --     pa = fromList (ix1 $ length pl) . map (\ x -> x :+ 0) $ pl
+  --     o = ldConv ca pa
+  --     ol = zip @Int [0..] $ toList o
+  -- pPrint $ ol
+  -- let gen = (<*>) (1 `d` 3)
+  -- mapM_ (\ i -> putStrLn $ "output(" ++ show i ++ "):" ++ printDist (gen i :: Dist Double Integer)) [80]
   -- let dayGen = (multipleDaysProgress 10 2)
   -- print $ calculateDC (10,2) 4732 dayGen
   -- mapM_ (\ x -> print (x,cdf (dayGen x :: Dist Double Integer) 4732)) [32..64]
   mapM_ genForNumDice [10]
-  --putStrLn $ "output:" ++ printDist (70 `d` 2 :: Dist Double Integer)
+  -- let gen = (<*>) (1 `d` 10)
+  -- mapM_ (\ i -> putStrLn $ "output(" ++ show i ++ "):" ++ printDist (gen i :: Dist Double Integer)) [1..3]
 
   --- print $ min (singleDaysProgress 20 1000 :: Dist Double Integer)
   -- print $ max (multipleDaysProg:w

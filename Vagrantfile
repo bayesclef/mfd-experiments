@@ -35,7 +35,9 @@ Vagrant.configure(2) do |config|
     sudo apt-get upgrade -y
     sudo apt-get install wget curl fish htop git subversion -y
     sudo apt-get install software-properties-common tree -y 
+    sudo apt-get install pkg-config time -y 
     sudo apt-get install imagemagick inkscape -y 
+    sudo apt-get install libfftw3-3 libfftw3-bin libfftw3-dev -y 
   SHELL
 
   # Install Z3 theorem prover
@@ -49,7 +51,7 @@ Vagrant.configure(2) do |config|
     echo 'deb http://download.fpcomplete.com/ubuntu xenial main'|sudo tee /etc/apt/sources.list.d/fpco.list
     sudo apt-get update && sudo apt-get install stack -y
   SHELL
- 
+
   # Temporary directories for the install process
   config.vm.provision "shell", inline: <<-SHELL
     sudo mkdir /install

@@ -15,7 +15,7 @@ cabal-version:       >=1.10
 library
   hs-source-dirs:      lib
   exposed-modules:     Lib
-  build-depends:       base >= 4.7 && < 5
+  build-depends:       base
   default-language:    Haskell2010
 
 executable extrasensory
@@ -89,10 +89,10 @@ executable sealing-analysis
     base,
     cryptonite,
     exact-combinatorics,
-    probability, 
-    -- fft,
-    -- carray,
-    pure-fft,
+    -- probability, 
+    repa,
+    repa-fftw,
+    -- pure-fft,
     pretty-show,
     aeson,
     aeson-pretty,
