@@ -674,15 +674,16 @@ maxTarget = maximum . map fst . probOfTarget
 --   PS querys. first a bunch of things between the 0 and the minimum we
 --   find, and then a whole pile of increments in the range that's more
 --   interesting. This just gets us a full range of useful output.
-getRTList :: (Ord d,Integral d) => [PS p d]-> [d]
-getRTList !pl = rmdups $ [0,zDivs..min] ++ [min,min+inc..max] ++ [max]
+getRTList :: (Show d, Show p, Ord d,Integral d) => [PS p d]-> [d]
+getRTList !pl = {- t . -} rmdups $ [0,zDivs..min] ++ [min,min+inc..max] ++ [max]
   where
+    t = trace ("foo:" ++ show (pl, min, max, inc, zInc))
     min  = minimum . map minTarget $ pl
     max  = maximum . map maxTarget $ pl
     divs = 40
-    inc  = (max - min) `div` divs
+    inc  = P.max 1 $ (max - min) `div` divs
     zDivs = 20
-    zInc = min `div` zDivs
+    zInc = P.max 1 $  min `div` zDivs
 
 -- | Datastructure for DaysToComplete queries, this is just a convinient
 --   way to get nice read and show instances for this stype of information.
@@ -736,7 +737,7 @@ calculateDC !(sealingDice,dailyTarget) !researchTarget !distGen
     getDays :: Double -> Maybe Integer
     getDays p = daysToComplete' distGen p researchTarget
     -- just get the actual probability for a particular day
-    getPair p = prob <$> dayOf
+    getPair p = (prob <$>) $! dayOf
       where
         dayOf = getDays p
         prob d = (d,1 - cdf (distGen d :: Dist Double Integer) researchTarget)
@@ -813,14 +814,14 @@ getDailyThresholds !nd = rmdups $ zList ++ [ndMin] ++ pList ++ [ndMax]
     ndMax = getFirstOne' (dist :: Dist Double Integer)
     -- number of daily thresholds we're going to be checking in the range
     -- [0..ndMin], where the probability of getting more is basically 100 %
-    zDivs = 5
+    zDivs = 10
     -- increment in the z range
-    zInc = ndMin `div` zDivs
+    zInc = P.max 1 $ ndMin `div` zDivs
     -- List of thresholds to check in the z range
     zList = [0,zInc..ndMin]
     -- for the p range, we're going to get numbers of dice that which have a
     -- p chance of failing outright and not progressing any research.
-    pProbs = [1/10,2/10..9/10]
+    pProbs = [0,1/20..1]
     pList = map (flip findPercentile dist) pProbs
 
 -- For a given number of sealing dice, figure out a bunch of interesting
@@ -835,7 +836,8 @@ genForNumDice sealingDice = do
 
 -- | The code that's actually run when we execute the program
 main :: IO ()
-main = mapM_ genForNumDice [10]
+main = --let pair = (10,888) in printPSDC pair >>= writePSDC pair
+  mapM_ genForNumDice [10,15..70]
 
 
 
