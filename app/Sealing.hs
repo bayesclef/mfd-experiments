@@ -10,6 +10,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE BangPatterns #-}
 
 module Main where
@@ -39,6 +40,9 @@ import Data.Aeson hiding (Array)
 import Data.Aeson.Encode.Pretty
 import GHC.Generics
 
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
+
 import Text.Show.Pretty
 
 import Foreign.C.Types
@@ -54,6 +58,10 @@ import Data.Array.Repa.Eval (fromList)
 -- import Numeric.FFT
 import qualified Data.ByteString.Lazy as BS
 import Debug.Trace
+
+import Data.IORef
+
+import Data.Foldable (foldl')
 
 import System.Directory (createDirectoryIfMissing)
 
@@ -93,8 +101,6 @@ printDist Dist{..} = ppShow (
   toInteger min,
   toInteger max,
   map (\ p -> (toInteger p,fromRational @Double . toRational $ cdf p)) [min..max])
-
-
 
 printCDF :: (Integral d,Enum d,Real p) => CDF p d -> String
 printCDF CDF{..} = ppShow (
@@ -606,35 +612,22 @@ data PS p d = PS {
     , dailyTarget :: !Integer
     , numDays :: !Integer
     , probOfTarget :: ![(d,p)]
-    } deriving (Show,Read,Generic)
+    } deriving (Show,Read,Generic,FromJSON,ToJSON)
 
-instance (ToJSON p,ToJSON d) => ToJSON (PS p d) where
-  toEncoding = genericToEncoding defaultOptions
-
-instance (FromJSON p,FromJSON d) => FromJSON (PS p d)
 
 -- | Type we're using for prettier JSON output
 data PSJ p d = PSJ {
     numDays :: !Integer
   , dataPoints :: ![PSE p d]
-  } deriving (Show,Read,Generic)
-
-instance (ToJSON p,ToJSON d) => ToJSON (PSJ p d) where
-  toEncoding = genericToEncoding defaultOptions
-
-instance (FromJSON p,FromJSON d) => FromJSON (PSJ p d)
+  } deriving (Show,Read,Generic,FromJSON,ToJSON)
 
 -- This is the type we're using to get prettier JSON output for the pairs of
 -- researchTargets and Probility of sucess
 data PSE p d = PSE {
     researchTarget :: !d
   , probabilityOfSuccess :: !p
-  } deriving (Show,Read,Generic)
+  } deriving (Show,Read,Generic,FromJSON,ToJSON)
 
-instance (ToJSON p,ToJSON d) => ToJSON (PSE p d) where
-  toEncoding = genericToEncoding defaultOptions
-
-instance (FromJSON p,FromJSON d) => FromJSON (PSE p d)
 
 psToPSJ :: (Ord d,Ord p) => PS p d -> PSJ p d
 psToPSJ !PS{..} = PSJ{
@@ -693,34 +686,18 @@ data DC p d = DC {
   , dailyTarget :: !Integer
   , researchTarget :: !Integer
   , probOfNumDays :: ![(Integer,p)]
-  } deriving (Show,Read,Generic)
+  } deriving (Show,Read,Generic,FromJSON,ToJSON)
 
-
-instance (ToJSON p,ToJSON d) => ToJSON (DC p d) where
-  toEncoding = genericToEncoding defaultOptions
-
-instance (FromJSON p,FromJSON d) => FromJSON (DC p d)
 
 data DCJ p d = DCJ {
     researchTarget :: !Integer
   , dataPoints :: ![DCE p d]
-  } deriving (Show,Read,Generic)
-
-instance (ToJSON p,ToJSON d) => ToJSON (DCJ p d) where
-  toEncoding = genericToEncoding defaultOptions
-
-instance (FromJSON p,FromJSON d) => FromJSON (DCJ p d)
-
+  } deriving (Show,Read,Generic,FromJSON,ToJSON)
 
 data DCE p d = DCE {
     numDays :: !Integer
   , probabilityOfSuccess :: !p
-  } deriving (Show,Read,Generic)
-
-instance (ToJSON p,ToJSON d) => ToJSON (DCE p d) where
-  toEncoding = genericToEncoding defaultOptions
-
-instance (FromJSON p,FromJSON d) => FromJSON (DCE p d)
+  }  deriving (Show,Read,Generic,FromJSON,ToJSON)
 
 dcToDCJ :: (Ord d,Ord p) => DC p d -> DCJ p d
 dcToDCJ !DC{..} = DCJ{
@@ -763,15 +740,68 @@ calculateDC !(sealingDice,dailyTarget) !researchTarget !distGen
 researchDays :: [Integer]
 researchDays = rmdups $ [1..7] ++ [10,15..maxDays] ++ [maxDays]
 
+data GStore p d = GStore {dice :: Map Integer (GS1 p d)}
+  deriving (Show,Read,Generic,Eq,Ord,FromJSON,ToJSON)
+
+data GS1 p d = GS1 {difficulty :: Map Integer (GS2 p d)}
+  deriving (Show,Read,Generic,Eq,Ord,FromJSON,ToJSON)
+
+data GS2 p d = GS2 {target :: Map d [(Integer,p)],days :: Map Integer [(d,p)]}
+  deriving (Show,Read,Generic,Eq,Ord,FromJSON,ToJSON)
+
+type IOStore = IORef (GStore Double Integer)
+
+emptyGS :: GStore p d
+emptyGS = GStore $ Map.empty
+
+addPS :: GStore Double Integer -> PS Double Integer -> GStore Double Integer
+addPS GStore{..} PS{..} = GStore $ Map.alter alt1 sealingDice dice
+  where
+    alt1 Nothing        = Just . GS1 $ Map.singleton dailyTarget (fromJust $ alt2 Nothing)
+    alt1 (Just GS1{..}) = Just . GS1 $ Map.alter alt2 dailyTarget difficulty
+    alt2 Nothing = Just $ GS2{
+        target = Map.empty
+      , days = Map.singleton numDays probOfTarget
+      }
+    alt2 (Just GS2{..}) = Just $ GS2 {
+        target = target
+      , days = Map.insert numDays probOfTarget days
+    }
+
+addDC :: GStore Double Integer -> DC Double Integer -> GStore Double Integer
+addDC GStore{..} DC{..} = GStore $ Map.alter alt1 sealingDice dice
+  where
+    alt1 Nothing        = Just . GS1 $ Map.singleton dailyTarget (fromJust $ alt2 Nothing)
+    alt1 (Just GS1{..}) = Just . GS1 $ Map.alter alt2 dailyTarget difficulty
+    alt2 Nothing = Just $ GS2{
+        target = Map.singleton researchTarget probOfNumDays
+      , days = Map.empty
+      }
+    alt2 (Just GS2{..}) = Just $ GS2 {
+        target = Map.insert researchTarget probOfNumDays target
+      , days = days
+    }
+
+addPSs :: [PS Double Integer] -> GStore Double Integer -> GStore Double Integer
+addPSs = flip $ foldl' addPS
+
+addDCs :: [DC Double Integer] -> GStore Double Integer -> GStore Double Integer
+addDCs = flip $ foldl' addDC
+
+addPSDC :: ([PS Double Integer],[DC Double Integer]) -> GStore Double Integer -> GStore Double Integer
+addPSDC (pss,dcs) = addPSs pss . addDCs dcs
+
 -- | Given a number of sealing dice and a daily threshold, generate a number
 --   of interesting DC and PS queries,
-printPSDC :: (Integer,Integer) -> IO ([PS Double Integer],[DC Double Integer])
-printPSDC !setPair@(numDice,dailyThresh) = do
+printPSDC :: Maybe IOStore -> (Integer,Integer) -> IO ([PS Double Integer],[DC Double Integer])
+printPSDC gs !setPair@(numDice,dailyThresh) = do
   let !distGen = multipleDaysProgress numDice dailyThresh
   pss <- mapM (genPrintPS distGen) researchDays
   let !researchTargets = getRTList pss
   dcs <- mapM (genPrintDC distGen) researchTargets
-  return (pss,dcs)
+  let psdc = (pss,dcs)
+  sequence $ flip modifyIORef (addPSDC psdc) <$> gs
+  return psdc
   where
     genPrintPS !distGen !rd = do
       let ps = calculatePS setPair rd distGen
@@ -826,22 +856,28 @@ getDailyThresholds !nd = rmdups $ zList ++ [ndMin] ++ pList ++ [ndMax]
 
 -- For a given number of sealing dice, figure out a bunch of interesting
 -- thresholds to test and then generate all the neccesary distributions
-genForNumDice :: Integer -> IO ()
-genForNumDice sealingDice = do
+genForNumDice :: Maybe IOStore -> Integer -> IO ()
+genForNumDice gs sealingDice = do
   let !thresholds = getDailyThresholds sealingDice
       !settingPairs = map (\ dt -> (sealingDice,dt)) thresholds
   mapM_ runPSDC settingPairs
   where
-    runPSDC settingPair = printPSDC settingPair >>= writePSDC settingPair
+    runPSDC settingPair = printPSDC gs settingPair >>= writePSDC settingPair
 
 -- | The code that's actually run when we execute the program
 main :: IO ()
-main = --let pair = (10,888) in printPSDC pair >>= writePSDC pair
-  mapM_ genForNumDice [10,15..70]
+main = do
+  gs <- newIORef emptyGS
+  mapM_ (genForNumDice $ Just gs) [10,15..70]
+  finalStore <- readIORef gs
+  BS.writeFile "out/allData.json" $ encodePretty finalStore
+  BS.writeFile "out/allData.min.json" $ encode finalStore
+
 
 
 
 --- Leftover code from various tests of main :V
+----let pair = (10,888) in printPSDC pair >>= writePSDC pair
   -- let cl = [1]
   --     pl = [0.2,0.2,0.2,0.2,0.2]
   --     ca = fromList (ix1 $ length cl) . map (\ x -> x :+ 0) $ cl

@@ -98,6 +98,7 @@ executable sealing-analysis
     aeson-pretty,
     bytestring,
     directory,
+    containers,
     memoize
 --    fgl,
 --    mtl,
