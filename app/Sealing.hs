@@ -603,7 +603,7 @@ daysToComplete' !md !x !r = {-(trace $ "days: " ++ show (x,r))-} dta 1
 -- | The probability of success thresholds we're looking for when given a
 --   sealing dice x daily target x number of days (research target -> prob)
 psThresholds :: [Double]
-psThresholds = [0,0.05..1]
+psThresholds = [0,0.025..1]
 
 -- | Datastructure for a probability of success threshold query , basically
 --   just so we can derive nice Show and Read instances for this
@@ -719,7 +719,7 @@ calculateDC !(sealingDice,dailyTarget) !researchTarget !distGen
         dayOf = getDays p
         prob d = (d,1 - cdf (distGen d :: Dist Double Integer) researchTarget)
     -- Go through each day and get research thresholds for it
-    probOfNumDays = rmdups . catMaybes . map getPair $ [0.001] ++ [0.05,0.1..0.95] ++ [0.999]
+    probOfNumDays = rmdups . catMaybes . map getPair $ [0.001] ++ [0.025,0.05..0.975] ++ [0.999]
     -- -- Find the days to get 1/10th of 1% probability of success
     -- minDay :: Maybe Integer
     -- minDay = getDays 0.001
@@ -738,7 +738,7 @@ calculateDC !(sealingDice,dailyTarget) !researchTarget !distGen
 
 -- | Get a list of interesting numbers of days to have researched
 researchDays :: [Integer]
-researchDays = rmdups $ [1..7] ++ [10,15..maxDays] ++ [maxDays]
+researchDays = [1..maxDays] -- rmdups $ [1..7] ++ [10,15..maxDays] ++ [maxDays]
 
 data GStore p d = GStore {dice :: Map Integer (GS1 p d)}
   deriving (Show,Read,Generic,Eq,Ord,FromJSON,ToJSON)
@@ -844,14 +844,14 @@ getDailyThresholds !nd = rmdups $ zList ++ [ndMin] ++ pList ++ [ndMax]
     ndMax = getFirstOne' (dist :: Dist Double Integer)
     -- number of daily thresholds we're going to be checking in the range
     -- [0..ndMin], where the probability of getting more is basically 100 %
-    zDivs = 10
+    zDivs = 20
     -- increment in the z range
     zInc = P.max 1 $ ndMin `div` zDivs
     -- List of thresholds to check in the z range
     zList = [0,zInc..ndMin]
     -- for the p range, we're going to get numbers of dice that which have a
     -- p chance of failing outright and not progressing any research.
-    pProbs = [0,1/20..1]
+    pProbs = [0,1/40..1]
     pList = map (flip findPercentile dist) pProbs
 
 -- For a given number of sealing dice, figure out a bunch of interesting
@@ -868,7 +868,7 @@ genForNumDice gs sealingDice = do
 main :: IO ()
 main = do
   gs <- newIORef emptyGS
-  mapM_ (genForNumDice $ Just gs) [10,15..70]
+  mapM_ (genForNumDice $ Just gs) [10..70]
   finalStore <- readIORef gs
   BS.writeFile "out/allData.json" $ encodePretty finalStore
   BS.writeFile "out/allData.min.json" $ encode finalStore
