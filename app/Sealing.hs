@@ -899,13 +899,13 @@ getDiffs numDice = [0,zInc..ndMax]
     ndMax = findPercentile 0.9 (dist :: Dist Double Integer)
     -- number of daily thresholds we're going to be checking in the range
     -- [0..ndMin], where the probability of getting more is basically 100 %
-    zDivs = 100
+    zDivs = 200
     -- increment in the z range
     zInc = P.max 1 $ ndMax `div` zDivs
 
 -- | For a given number of dice get the list of reasonable research targets
 getTotals :: Integer -> [Integer]
-getTotals numDice = [0,rInc..rMax]
+getTotals numDice = rmdups $ [1] ++ [2,4..200] ++ [200, 200 + rInc..rMax]
   where
     dist = multipleDaysProgress numDice 0 maxDays
     rMax = findPercentile 0.6 (dist :: Dist Double Integer)
