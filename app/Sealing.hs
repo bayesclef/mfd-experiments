@@ -12,6 +12,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE TupleSections #-}
 
 module Main where
 
@@ -864,9 +865,9 @@ genForNumDice gs sealingDice = do
   where
     runPSDC settingPair = printPSDC gs settingPair >>= writePSDC settingPair
 
--- | The code that's actually run when we execute the program
-main :: IO ()
-main = do
+-- Generate all the PS and DC data we want.
+genAndWritePSDC :: IO ()
+genAndWritePSDC = do
   gs <- newIORef emptyGS
   mapM_ (genForNumDice $ Just gs) [10..70]
   finalStore <- readIORef gs
@@ -875,6 +876,238 @@ main = do
 
 
 
+-- | Data type for the storage of plotdata for "sealing lvl -> (D,R -> T)"
+--   plots
+type EstTimeMap = Map Integer EstTimePlot
+data EstTimePlot = EstTimePlot {
+  -- Y axis
+    diffs :: ![Integer]
+  -- x axis
+  , totals :: ![Integer]
+  -- Plotdata
+  , estDays :: ![[Integer]]
+  , variance :: ![[Integer]]
+  } deriving (Show,Read,Generic,Eq,Ord,FromJSON,ToJSON)
+
+-- | For a given number of sealing dice, get the list of difficulties
+--   we're looking for
+getDiffs :: Integer -> [Integer]
+getDiffs numDice = [0,zInc..ndMax]
+  where
+    dist = numDice `d` 100
+    -- With nDice the probability of getting nore than nMax is basically 0
+    ndMax = getFirstOne' (dist :: Dist Double Integer)
+    -- number of daily thresholds we're going to be checking in the range
+    -- [0..ndMin], where the probability of getting more is basically 100 %
+    zDivs = 100
+    -- increment in the z range
+    zInc = P.max 1 $ ndMax `div` zDivs
+
+-- | For a given number of dice get the list of reasonable research targets
+getTotals :: Integer -> [Integer]
+getTotals numDice = [0,rInc..rMax]
+  where
+    dist = multipleDaysProgress numDice 0 maxDays
+    rMax = getFirstOne' (dist :: Dist Double Integer)
+    rDivs = 100
+    rInc = P.max 1 $ rMax `div` rDivs
+
+getEstTimePlot :: Integer -> EstTimePlot
+getEstTimePlot numDice = EstTimePlot{
+    diffs = {- trace ("for diffs " ++ show diffs) -} diffs
+  , totals = {- trace ("for totals " ++ show totals) -} totals
+  , estDays = estDays
+  , variance = variance
+  }
+  where
+    diffs = getDiffs numDice
+    totals = getTotals numDice
+    -- get all rows
+    (estDays,variance) = unzip $ map getSingDiff diffs
+    -- Get the row for a single difficulty
+    getSingDiff :: Integer -> ([Integer],[Integer])
+    getSingDiff diff = {- trace ("for difficulty " ++ show diff) $-}  (estList,varList)
+      where
+        distGen = multipleDaysProgress numDice diff
+        estList = map (ed 0.5) totals
+        varList = map (\ tot -> ((ed' 0.75 tot) - (ed' 0.25 tot)) `div` 2) totals
+        -- Number of days to some percentage with >max just set to -1
+        ed p t = fromMaybe (-1) $ daysToComplete' distGen p t
+        -- Number of days to some percentage with >max just set to max+1
+        ed' p t = fromMaybe (maxDays + 1) $ daysToComplete' distGen p t
+
+-- Generate the full pile fo estimated time plot sas needed.
+genAndWriteEstTimePlot :: IO ()
+genAndWriteEstTimePlot = do
+  etpL <- mapM (\ nd -> (nd,) <$> getSingleETP nd) [10,15..70]
+  createDirectoryIfMissing False dir
+  let ets = Map.fromList etpL
+  BS.writeFile (dir ++ "estTimeData.json") $ encodePretty ets
+  BS.writeFile (dir ++ "estTimeData.min.json") $ encode ets
+  where
+    dir = "out/"
+    getSingleETP :: Integer -> IO (EstTimePlot)
+    getSingleETP numDice = do
+      putStrLn $ "Beginning generating ETP for Sealing Lvl" ++ (show numDice)
+      let !etp = getEstTimePlot numDice
+      print $ etp
+      putStrLn $ "Finished generating ETP for Sealing Lvl" ++ (show numDice) ++ "\n" ++ (show etp)
+      return etp
+
+-- | The code that's actually run when we execute the program
+main :: IO ()
+main = genAndWriteEstTimePlot
+
+-- So we've got the following variables :
+--
+--  -- | Research points these are what we accululate as we work.
+--  type Points = Int
+--
+--  -- | Days of work on the project (1 is start, T is curent)
+--  type Day = Int
+--
+--  numDice :: Int
+--  numDice := Level of sealing skill / Number of Sealing Dice
+--    - Always Known
+--
+--  diff :: Int
+--  diff := Project Difficulty
+--    - Hidden Parameter
+--    - Have priors P(diff)
+--
+--  total :: Points
+--  total := Total research points needed to complete project
+--    - Hidden Parameter
+--    - Have priors P(total)
+--
+--  date :: Day
+--  date := Time Spent on specific project (days)
+--    - Always known
+--
+--  roll :: Day -> Int
+--  roll d := Sealing roll on day d
+--  roll d = sample (asSeed d) $ n `d` 100
+--    - Possibly visible?
+--    - Can easily get P(roll|numDice,diff)
+--
+--  effort :: Day -> Int
+--  effort d := Effort put towards sealing reseach on day d
+--  effort d = max(0, roll t - diff)
+--    - Possibly visible?
+--    - Can easily get P(effort|numDice,diff)
+--
+--  inc :: Day -> Points
+--  inc d := amount the project counter is incremented by on day d
+--  inc d = (effort t) / (numDice - diff/50)^0.65
+--    - Possibly visible?
+--    - Can easily get P(inc|numDice,diff)
+--
+--  progress :: Day -> Points
+--  progress d := total progress on research project by end-of-day d
+--  progress d = sum [inc d' | d' <- [1..d]]
+--    - Possibly visible?
+--    - Can easily get P(progress|d,numDice,diff)
+--
+--  finished :: Day -> Bool
+--  finished d := Is the project done by end-of-day d
+--  finished d = progress d >= total
+--    - Always Known
+--    - Can easily get P(finished d|numDice,diff,total)
+--
+-- Bayes Law:
+--
+--  P(A|B) = P(A)* P(B|A)/P(B)
+--
+-- Case 1: We don't get any additional information.
+--
+--  Known:
+--    - numDice
+--    - date
+--    - (finished d == false) `forall` 1 <= d <= date
+--
+--    - P(diff,total@0) = P(diff) * P(total)
+--    - P(diff,total@x) =
+--          P(diff,total@x-1)
+--        * P(finished x|diff,total@x-1)
+--        / P(finished x@x-1)
+--
+--    - P(finished d@n) = forall diff
+--
+--
+--    - P(diff,total|d=0) = P(diff,total)
+--    - P(diff,total|d=x) = P(diff,total|d=x-1,finished x = false)
+--                        = P(diff,total|d=x-1) *
+--                          (  P(finished x = false|d=x-1,diff,total)
+--                           / P(finished x = false|d=x-1))
+--    - P(finished 0) = 0
+--    - P(finished x|d=n) = P(finished x|numDice,
+--
+--  (d = 0) = empty-set
+--  (d = x) = d=x-1,finished x == false
+--
+--  Want:
+--    - P(diff,total|d=date)
+--
+-- Proposal 1;
+--
+--  proxyRoll :: Day -> Int
+--  proxyRoll d := Hidden die roll made for estimating time to completion
+--  proxyRoll d = sample (asSeed d) $ n d 100
+--    - Hidden Parameter
+--    - Can easily get P(proxyRoll|numDice,diff)
+--
+--  proxyEffort :: Day -> Int
+--  proxyEffort d := Estimated daily effort put towards sealing reseach on day d
+--  proxyEffort d = max(0, proxyRoll t - diff)
+--    - Hidden Parameter
+--    - Can easily get P(proxyEffort|numDice,diff)
+--
+--  proxyInc :: Day -> Points
+--  proxyInc d := Estimated amount the project counter is incremented by on day d
+--  proxyInc d = (proxyEffort t) / (numDice - diff/50)^0.65
+--    - Possibly visible?
+--    - Can easily get P(proxyInc|numDice,diff)
+--
+--  estimated :: Day -> Either Day Infinity
+--  estimated d := Estimated time to project completion using proxy roll
+--  estimated d = (total - finished d) / (proxyInc d)
+--    - Known
+-- We can calculate
+-- We always know:
+--
+--  - N = Number of sealing die
+--  - T = Time spent on project
+--  - S = Is the project complete or not?
+--
+--
+-- We want to predict:
+--
+--  - D = Project Difficulty
+--  - R = Research Threshold
+--
+-- We might also have access to:
+--
+--  - L := Each day's roll for Max(0, Nd100 - D)
+--    - Only unknown variable is D.
+--    - Cannot provide information on R
+--    - Is a pretty easy distribution to work with in order to figure out D
+--  - C := Each day's addition to the progress counter
+--    - Only dependent on D
+--    - Cannot provide informatio on R
+--    - Can
+--
+-- Key questions:
+--
+--  - How does choice of D & R affect time to complete a seal?
+--  - How does my ability to complete a project change as my level changes?
+--  - How
+--
+--
+-- Notation for plots:
+-- (Fixed Variables) -> (Inependent Variables) -> (Dependent Variables)
+--
+--
+--
 
 --- Leftover code from various tests of main :V
 ----let pair = (10,888) in printPSDC pair >>= writePSDC pair
