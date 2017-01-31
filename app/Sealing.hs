@@ -896,7 +896,7 @@ getDiffs numDice = [0,zInc..ndMax]
   where
     dist = numDice `d` 100
     -- With nDice the probability of getting nore than nMax is basically 0
-    ndMax = getFirstOne' (dist :: Dist Double Integer)
+    ndMax = findPercentile 0.9 (dist :: Dist Double Integer)
     -- number of daily thresholds we're going to be checking in the range
     -- [0..ndMin], where the probability of getting more is basically 100 %
     zDivs = 100
@@ -908,8 +908,8 @@ getTotals :: Integer -> [Integer]
 getTotals numDice = [0,rInc..rMax]
   where
     dist = multipleDaysProgress numDice 0 maxDays
-    rMax = getFirstOne' (dist :: Dist Double Integer)
-    rDivs = 100
+    rMax = findPercentile 0.6 (dist :: Dist Double Integer)
+    rDivs = 200
     rInc = P.max 1 $ rMax `div` rDivs
 
 getEstTimePlot :: Integer -> EstTimePlot
@@ -926,15 +926,16 @@ getEstTimePlot numDice = EstTimePlot{
     (estDays,variance) = unzip $ map getSingDiff diffs
     -- Get the row for a single difficulty
     getSingDiff :: Integer -> ([Integer],[Integer])
-    getSingDiff diff = {- trace ("for difficulty " ++ show diff) $-}  (estList,varList)
+    -- The trace is here so I can see progress, but it's an otherwise pure
+    -- function, :V medium bad practice I suppose.
+    getSingDiff diff = {- trace ("for difficulty " ++ show diff) $ -} (estList,varList)
       where
         distGen = multipleDaysProgress numDice diff
-        estList = map (ed 0.5) totals
-        varList = map (\ tot -> ((ed' 0.75 tot) - (ed' 0.25 tot)) `div` 2) totals
+        (estList,varList) = unzip $ map tp totals
+          where
+            tp t = let e5 = ed 0.5 t in (e5,if (e5 == -1) then -1 else P.max (e5 - ed 0.05 t) (ed 0.95 t - e5))
         -- Number of days to some percentage with >max just set to -1
         ed p t = fromMaybe (-1) $ daysToComplete' distGen p t
-        -- Number of days to some percentage with >max just set to max+1
-        ed' p t = fromMaybe (maxDays + 1) $ daysToComplete' distGen p t
 
 -- Generate the full pile fo estimated time plot sas needed.
 genAndWriteEstTimePlot :: IO ()
@@ -950,8 +951,7 @@ genAndWriteEstTimePlot = do
     getSingleETP numDice = do
       putStrLn $ "Beginning generating ETP for Sealing Lvl" ++ (show numDice)
       let !etp = getEstTimePlot numDice
-      print $ etp
-      putStrLn $ "Finished generating ETP for Sealing Lvl" ++ (show numDice) ++ "\n" ++ (show etp)
+      print etp
       return etp
 
 -- | The code that's actually run when we execute the program
